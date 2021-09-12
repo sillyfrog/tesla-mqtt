@@ -115,7 +115,7 @@ class TeslaToMqtt:
         return args
 
     def teslathread(self):
-        with teslapy.Tesla(self.config.email, "use cache.json") as tesla:
+        with teslapy.Tesla(self.config.email) as tesla:
             tesla.fetch_token()
             cars = tesla.vehicle_list()
             if self.config.vin:
@@ -138,6 +138,7 @@ class TeslaToMqtt:
                 print(time.asctime(), f"Sleeping {sleeptime}s")
                 try:
                     cmd = self.carq.get(timeout=sleeptime)
+                    active = True
                 except queue.Empty:
                     cmd = None
                 print(time.asctime(), f"Done: Sleeping {cmd}")
