@@ -4,6 +4,8 @@ Tesla Car API to MQTT bridge for controlling car charging. I'm publishing for re
 
 This is based on [TeslaPy](https://github.com/tdorssers/TeslaPy). Due to changes in the Tesla auth process, getting the initial login is a bit of a mess.
 
+It is designed to work with [Home Assistant](https://www.home-assistant.io/), and will publish the required auto-discovery messages at startup.
+
 Once downloaded, install the requirements (I would recommend a virtual env):
 
 ```
