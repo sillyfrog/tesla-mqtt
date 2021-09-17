@@ -55,7 +55,7 @@ class TeslaToMqtt:
             except Exception as e:
                 print("Error in tesla thread:", e)
                 traceback.print_exc()
-                time.sleep(TESLA_QUEUE_TIMEOUT)
+                time.sleep(TESLA_QUEUE_TIMEOUT / 2)
 
     def onmqttconnect(self, client, userdata, flags, rc):
         self.client.subscribe(f"{self.config.basetopic}/+/set")
@@ -141,7 +141,7 @@ class TeslaToMqtt:
                     active = True
                 except queue.Empty:
                     cmd = None
-                print(time.asctime(), f"Done: Sleeping {cmd}")
+                print(time.asctime(), f"Done: Sleeping {cmd}, Active: {active}")
 
                 if cmd:
                     print("Sending command:", cmd)
@@ -239,7 +239,7 @@ class TeslaToMqtt:
                     "name": f"{carname} Battery Level",
                     "state_topic": f"{self.config.basetopic}/battery_level",
                     "unique_id": f"{self._vin}_battery_level",
-                    # "unit_of_measurement": "%",
+                    "unit_of_measurement": "%",
                     "device_class": "battery",
                     "device": {
                         "identifiers": [f"{self._vin}_device"],
