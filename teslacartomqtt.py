@@ -18,6 +18,7 @@ import time
 import json
 import math
 import traceback
+import logging
 
 import paho.mqtt.client
 import teslapy
@@ -25,6 +26,12 @@ import teslapy
 
 TESLA_QUEUE_TIMEOUT = 11 * 60
 TESLA_QUEUE_ACTIVE = 15
+TESLA_MAX_SLEEP_TIME = 3600
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s: %(levelname)s:%(name)s: %(message)s"
+)
+log = logging.getLogger(__name__)
 
 
 class TeslaToMqtt:
@@ -40,6 +47,7 @@ class TeslaToMqtt:
             self.home = (lat, lng)
         else:
             self.home = None
+        self.error_sleep_time = TESLA_QUEUE_ACTIVE
 
     def start(self):
         self.client = paho.mqtt.client.Client()
@@ -53,19 +61,30 @@ class TeslaToMqtt:
             try:
                 self.teslathread()
             except Exception as e:
-                print("Error in tesla thread:", e)
-                traceback.print_exc()
-                time.sleep(TESLA_QUEUE_TIMEOUT / 2)
+                # Clear the command queue
+                while self.carq.qsize() > 1:
+                    try:
+                        self.carq.get_nowait()
+                    except queue.Empty:
+                        pass
+
+                log.exception("Error in tesla thread")
+                # log.debug("Error in tesla thread: %s", e)
+                # traceback.print_exc()
+                log.info("Sleeping %0.1f seconds from error", self.error_sleep_time)
+                time.sleep(self.error_sleep_time)
+                self.error_sleep_time *= 1.5
+                if self.error_sleep_time > TESLA_MAX_SLEEP_TIME:
+                    self.error_sleep_time = TESLA_MAX_SLEEP_TIME
 
     def onmqttconnect(self, client, userdata, flags, rc):
         self.client.subscribe(f"{self.config.basetopic}/+/set")
-        print("sub to", f"{self.config.basetopic}/+/set")
 
     def onmqttmessage(self, client, userdata, msg):
         parts = msg.topic.split("/")
         payload = msg.payload.decode()
         setting = parts[-2]
-        print("Incomming:", setting, payload)
+        log.debug("Incomming MQTT Message: %s : %s", setting, payload)
         if setting == "charge_limit":
             self.carq.put({"name": "CHANGE_CHARGE_LIMIT", "percent": forceint(payload)})
         elif setting == "charging":
@@ -74,7 +93,7 @@ class TeslaToMqtt:
             elif payload == "false":
                 self.carq.put({"name": "STOP_CHARGE"})
         else:
-            print("Unknown setting:", setting)
+            log.error("Unknown MQTT setting: %s", setting)
 
     def _initconfig(self):
         parser = argparse.ArgumentParser(
@@ -98,6 +117,10 @@ class TeslaToMqtt:
             help='the lat,long of the "home", if not set, vehicle will always be home. '
             "Home is assumed to be within about 100m for lat,long",
         )
+        parser.add_argument(
+            "--debug",
+            help="If set with any value, will include debug level logging",
+        )
 
         # Get the OS environnement arguments
         cmdlineargs = sys.argv.copy()
@@ -110,8 +133,10 @@ class TeslaToMqtt:
                     arg = f"--{arg}"
                 cmdlineargs.append(arg)
 
-        print(cmdlineargs)
         args = parser.parse_args(cmdlineargs[1:])
+        if args.debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+        log.debug("Processed command line arguments: %s", cmdlineargs)
         return args
 
     def teslathread(self):
@@ -135,28 +160,27 @@ class TeslaToMqtt:
                 active = False
                 if sleeptime > TESLA_QUEUE_TIMEOUT:
                     sleeptime = TESLA_QUEUE_TIMEOUT
-                print(time.asctime(), f"Sleeping {sleeptime}s")
+                log.debug("Sleeping %.1fs", sleeptime)
                 try:
                     cmd = self.carq.get(timeout=sleeptime)
                     active = True
                 except queue.Empty:
                     cmd = None
-                print(time.asctime(), f"Done: Sleeping {cmd}, Active: {active}")
 
                 if cmd:
-                    print("Sending command:", cmd)
+                    log.debug("Sending Tesla command: %s", cmd)
                     try:
                         car.command(**cmd)
                     except teslapy.VehicleError as e:
                         if e.args[0] != "already_set":
                             raise e
                         else:
-                            print("Already set, ignored")
+                            log.debug("Command already set, ignored")
 
                 # print(vehicles)
                 # print(vehicles[0].get_vehicle_data())
                 summary = car.get_vehicle_summary()
-                print(time.asctime(), "car state:", summary.get("state"))
+                log.debug("Tesla car state: %s", summary.get("state"))
                 if summary.get("state") == "online":
                     data = car.get_vehicle_data()
                     chargedata = data["charge_state"]
@@ -175,7 +199,6 @@ class TeslaToMqtt:
                                 forcefloat(drivedata["longitude"]),
                             ),
                         )
-                        print("XXX Distance:", dist)
                         if dist > 100:
                             homestate = "not_home"
                     self.pubifchanged(
@@ -203,8 +226,11 @@ class TeslaToMqtt:
 
                     if active:
                         sleeptime = TESLA_QUEUE_ACTIVE
+                        if shiftstate == "P":
+                            sleeptime *= 4  # Sleep for longer if parked
                     else:
                         sleeptime *= 1.2
+                    self.error_sleep_time = TESLA_QUEUE_ACTIVE
 
     def pubifchanged(self, item, value):
         "Publish to MQTT item (basetopic will be applied), with value, if it has changed."
